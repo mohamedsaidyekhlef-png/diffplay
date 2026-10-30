@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { detectProvider, narrate } from "./narrate.js";
 import { renderHtml } from "./render/html.js";
 import { renderMarkdown } from "./render/markdown.js";
 import { buildWalkthrough } from "./story.js";
 
-const VERSION = "0.1.0";
+// Read the version from package.json so the CLI never drifts from the release tag.
+const VERSION: string = JSON.parse(
+  readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../package.json"), "utf8"),
+).version;
 
 const HELP = `diffplay ${VERSION}
 Turn any diff or pull request into a guided, risk-ranked walkthrough.
