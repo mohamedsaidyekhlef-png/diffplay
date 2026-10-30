@@ -128,6 +128,8 @@ export async function narrate(w: Walkthrough, provider: Provider, context?: stri
     w.narratedBy = `${provider.name} (${provider.model})`;
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    const err = e as { message?: string; cause?: { code?: string; message?: string } };
+    const reason = err.cause?.code ?? err.cause?.message;
+    return { ok: false, error: reason ? `${err.message} (${reason})` : (err.message ?? String(e)) };
   }
 }

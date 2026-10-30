@@ -142,3 +142,41 @@ test("a test file moved to a new folder is not a deleted test", () => {
   ].join("\n");
   assert.equal(buildWalkthrough(diff).stats.risks.high, 0);
 });
+
+test("non-ASCII and spaced file names are decoded", () => {
+  const diff = [
+    'diff --git "a/src/\\303\\274n\\303\\257code/na\\303\\257ve.py" "b/src/\\303\\274n\\303\\257code/na\\303\\257ve.py"',
+    'index 1..2 100644',
+    '--- "a/src/\\303\\274n\\303\\257code/na\\303\\257ve.py"',
+    '+++ "b/src/\\303\\274n\\303\\257code/na\\303\\257ve.py"',
+    "@@ -1 +1 @@",
+    "-x",
+    "+y",
+    "diff --git a/src/my folder/file name.ts b/src/my folder/file name.ts",
+    "--- a/src/my folder/file name.ts",
+    "+++ b/src/my folder/file name.ts",
+    "@@ -1 +1 @@",
+    "-a",
+    "+b",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseDiff(diff).map((f) => f.path), ["src/ünïcode/naïve.py", "src/my folder/file name.ts"]);
+});
+
+test("assertions moved between test files are not a loss; a real loss is one file-level flag", () => {
+  const mk = (path, lines) => [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -1,${lines.filter((l) => l[0] !== "+").length} +1,${lines.filter((l) => l[0] !== "-").length} @@`, ...lines].join("\n");
+  const moved = [
+    mk("tests/a.test.ts", ["-expect(a).toBe(1)", "-expect(b).toBe(2)", " // end"]),
+    mk("tests/b.test.ts", ["+expect(a).toBe(1)", "+expect(b).toBe(2)", " // end"]),
+  ].join("\n") + "\n";
+  assert.equal(buildWalkthrough(moved).stats.risks.medium, 0);
+  const lost = mk("tests/a.test.ts", ["-expect(a).toBe(1)", "-expect(b).toBe(2)", "-expect(c).toBe(3)", " // end"]) + "\n";
+  const w = buildWalkthrough(lost);
+  assert.equal(w.stats.risks.medium, 1);
+  assert.match(w.topRisks[0].hit.label, /Fewer assertions/);
+});
+
+test("conditional test skips are not flagged", () => {
+  const diff = ["diff --git a/tests/t.py b/tests/t.py", "--- a/tests/t.py", "+++ b/tests/t.py", "@@ -1 +1,2 @@", "+@pytest.mark.skipif(sys.version_info < (3, 10), reason='needs 3.10')", " def test_x(): pass", ""].join("\n");
+  assert.equal(buildWalkthrough(diff).stats.risks.medium, 0);
+});

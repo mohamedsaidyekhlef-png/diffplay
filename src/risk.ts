@@ -83,10 +83,7 @@ const LINE_RULES: LineRule[] = [
     re: /catch\s*(\(\s*\w*\s*\))?\s*\{\s*\}|except(\s+\w+(\s+as\s+\w+)?)?\s*:\s*pass|\.catch\(\s*\(\s*\)\s*=>\s*(\{\s*\}|null|undefined)\s*\)|rescue\s*=>?\s*nil|_ = err\b/ },
   { id: "test-disabled", label: "Test skipped or weakened", severity: "medium", on: "add",
     why: "A test was skipped, focused or loosened: agents do this to make CI green.",
-    re: /\b(it|test|describe)\.(skip|only|todo)\(|\bx(it|describe)\(|@pytest\.mark\.skip|@unittest\.skip|@Disabled|t\.Skip\(|expect\(true\)\.toBe\(true\)|assert True\b|toMatchSnapshot\(\)/ },
-  { id: "assert-removed", label: "Assertion removed", severity: "medium", on: "del",
-    why: "A test assertion was deleted. Check the behaviour is still verified.",
-    re: /\b(expect\(|assert(Equal|True|False|_called|_eq)?\b|should\.|t\.(Error|Fatal)|\.toBe\(|\.toEqual\()/ },
+    re: /\b(it|test|describe)\.(skip|only|todo)\(|\bx(it|describe)\(|@pytest\.mark\.skip\b(?!if)|\bpytest\.skip\(|@unittest\.skip\b(?!If|Unless)|@Disabled|t\.Skip\(|expect\(true\)\.toBe\(true\)|assert True\b|toMatchSnapshot\(\)/ },
   { id: "type-escape", label: "Type safety bypassed", severity: "low", on: "add",
     why: "Silences the type checker or linter instead of fixing the cause.",
     re: /(@ts-ignore|@ts-nocheck|@ts-expect-error|as\s+any\b|:\s*any\b|eslint-disable|# type:\s*ignore|# noqa|#\[allow\(|nolint|unsafe\s*\{)/,
@@ -109,7 +106,7 @@ const LINE_RULES: LineRule[] = [
 /** A dependency entry such as "zod": "^3.2" or requests==2.31 (not the package's own version field). */
 const DEP_LINE = /["']?[@\w./-]+["']?\s*([:=]|==|>=|~=)\s*["']?[\^~>=<]*\d/;
 const OWN_VERSION = /^\s*["']?(version|packageManager|node|engines)["']?\s*[:=]/;
-const ASSERTION = /\b(expect\(|assert(Equal|True|False|_called|_eq)?\b|should\.|t\.(Error|Fatal)|\.toBe\(|\.toEqual\()/;
+const ASSERTION = /\b(expect\(|assert(Equal|True|False|_called|_eq|_eq!)?\b|should\.|t\.(Error|Fatal)|\.toBe\(|\.toEqual\()/;
 const TEST_FILE = /(\.(test|spec)\.\w+$|_test\.\w+$|(^|\/)tests?\/)/;
 
 interface FileRule { id: string; label: string; severity: Severity; why: string; test: (f: FileDiff) => boolean }
@@ -159,6 +156,11 @@ function scanLine(path: string, line: DiffLine): RiskHit[] {
 /** Annotate every line and file with risk hits, and compute file risk scores. */
 export function scoreRisks(files: FileDiff[]): void {
   // A test file deleted here and re-added under the same name elsewhere was moved, not lost.
+  // Assertions can move between test files; only a net loss across the whole diff counts.
+  const count = (f: FileDiff, kind: "add" | "del") =>
+    f.hunks.reduce((n, h) => n + h.lines.filter((l) => l.kind === kind && ASSERTION.test(l.text)).length, 0);
+  const testFiles = files.filter((f) => TEST_FILE.test(f.path));
+  const netLoss = testFiles.reduce((n, f) => n + count(f, "del") - count(f, "add"), 0) > 0;
   const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[cm]?[jt]sx?$|\.\w+$/, "");
   const addedNames = new Set(files.filter((f) => f.status === "added").map((f) => stem(f.path)));
   for (const f of files) {
@@ -171,17 +173,20 @@ export function scoreRisks(files: FileDiff[]): void {
         for (const r of l.risks) max = Math.max(max, SEVERITY_SCORE[r.severity]);
       }
     }
-    // An edited assertion is not a removed one: only flag when the file ends up with fewer.
-    const assertsOut = f.hunks.reduce((n, h) => n + h.lines.filter((l) => l.kind === "del" && ASSERTION.test(l.text)).length, 0);
-    const assertsIn = f.hunks.reduce((n, h) => n + h.lines.filter((l) => l.kind === "add" && ASSERTION.test(l.text)).length, 0);
-    if (assertsIn >= assertsOut) {
-      for (const h of f.hunks) for (const l of h.lines) l.risks = l.risks.filter((r) => r.rule !== "assert-removed");
-      max = 0;
-      for (const h of f.hunks) for (const l of h.lines) for (const r of l.risks) max = Math.max(max, SEVERITY_SCORE[r.severity]);
-    }
+    // Edited assertions are fine; a test file that ends up with fewer of them is worth a look.
+    const assertsOut = count(f, "del");
+    const assertsIn = count(f, "add");
     f.fileRisks = FILE_RULES.filter((r) => r.test(f))
       .filter((r) => !(r.id === "deleted-test" && addedNames.has(stem(f.path))))
       .map((r) => ({ rule: r.id, label: r.label, severity: r.severity, why: r.why }));
+    if (netLoss && assertsOut > assertsIn && TEST_FILE.test(f.path) && f.status !== "deleted") {
+      f.fileRisks.push({
+        rule: "fewer-assertions",
+        label: `Fewer assertions (${assertsOut} removed, ${assertsIn} added)`,
+        severity: "medium",
+        why: "This test file checks less than it did. Make sure the behaviour is still verified.",
+      });
+    }
     for (const r of f.fileRisks) max = Math.max(max, SEVERITY_SCORE[r.severity]);
     f.riskScore = max;
   }

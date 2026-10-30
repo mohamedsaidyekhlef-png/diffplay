@@ -319,14 +319,14 @@ if('IntersectionObserver' in window){
   const io=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting)setActive(e.target.dataset.step)})},{rootMargin:'-20% 0px -70% 0px'});
   steps.forEach(s=>io.observe(s));
 }
-const current=()=>{let i=0;steps.forEach((s,k)=>{if(s.getBoundingClientRect().top<120)i=k});return i};
+const current=()=>{let i=-1;steps.forEach((s,k)=>{if(s.getBoundingClientRect().top<120)i=k});return i};
 const flags=[...document.querySelectorAll('.ln.flag.sev-high, .ln.flag.sev-medium')];
 let f=-1;
 const reveal=el=>{const d=el.closest('details');if(d)d.open=true;document.querySelectorAll('.lit').forEach(x=>x.classList.remove('lit'));el.classList.add('lit');el.scrollIntoView({block:'center'})};
 document.addEventListener('click',e=>{const c=e.target.closest('.cell,.jump');if(!c)return;e.preventDefault();const t=document.getElementById(c.getAttribute('href').slice(1));if(t)reveal(t)});
 document.addEventListener('keydown',e=>{
   if(e.target.closest('input,textarea')||e.metaKey||e.ctrlKey||e.altKey)return;
-  if(e.key==='j'||e.key==='k'){const i=Math.min(steps.length-1,Math.max(0,current()+(e.key==='j'?1:-1)));steps[i].scrollIntoView();steps[i].querySelector('h2').focus?.()}
+  if(e.key==='j'||e.key==='k'){const i=Math.min(steps.length-1,Math.max(0,current()+(e.key==='j'?1:-1)));steps[i].scrollIntoView()}
   if(e.key==='n'&&flags.length){f=(f+1)%flags.length;reveal(flags[f])}
 });
 })();`;

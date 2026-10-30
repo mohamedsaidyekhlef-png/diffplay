@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { execFileSync, spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { fstatSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { detectProvider, narrate } from "./narrate.js";
 import { renderHtml } from "./render/html.js";
@@ -17,7 +17,7 @@ Usage
   diffplay HEAD~3                  any git revision or range (main..feature, abc123...def456)
   diffplay <github-pr-url>         a GitHub pull request (uses gh if installed, else the public .diff)
   diffplay --pr 128                a PR in the current repo (needs gh)
-  diffplay --diff change.patch     a diff file;  or pipe one:  git diff | diffplay
+  diffplay --diff change.patch     a diff file;  or pipe one:  git diff | diffplay  (or: diffplay -)
 
 Options
   -o, --out <file>      HTML output path (default: diffplay.html)
@@ -76,7 +76,7 @@ function parseArgs(argv: string[]): Args {
         break;
       }
       default:
-        if (k.startsWith("-")) fail(`Unknown option ${k}. Run diffplay --help.`);
+        if (k.startsWith("-") && k !== "-") fail(`Unknown option ${k}. Run diffplay --help.`);
         a.target = k;
     }
   }
@@ -92,17 +92,64 @@ const sh = (cmd: string, args: string[]) =>
   execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
 
 function tryGit(args: string[]): string | null {
-  try { return sh("git", args).trim(); } catch { return null; }
+  // core.quotePath=false keeps non-ASCII file names readable.
+  try { return sh("git", ["-c", "core.quotePath=false", ...args]).trim(); } catch { return null; }
 }
 
 function hasGh(): boolean {
   try { sh("gh", ["--version"]); return true; } catch { return false; }
 }
 
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const c of process.stdin) chunks.push(c as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
+/** True when stdin is a pipe or a redirected file (not a terminal, not /dev/null). */
+function stdinIsData(): boolean {
+  try {
+    const st = fstatSync(0);
+    return st.isFIFO() || st.isFile() || st.isSocket();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read stdin. With `firstByteTimeout`, give up if nothing arrives in time:
+ * CI runners, editors and agent shells often leave stdin open as an empty pipe,
+ * and waiting on it would hang forever.
+ */
+function readStdin(firstByteTimeout?: number): Promise<string> {
+  return new Promise((resolveRead) => {
+    const chunks: Buffer[] = [];
+    let timer: NodeJS.Timeout | undefined;
+    const finish = () => {
+      if (timer) clearTimeout(timer);
+      process.stdin.removeAllListeners("data");
+      process.stdin.removeAllListeners("end");
+      process.stdin.pause();
+      resolveRead(Buffer.concat(chunks).toString("utf8"));
+    };
+    if (firstByteTimeout) timer = setTimeout(() => { if (!chunks.length) { process.stdin.destroy(); finish(); } }, firstByteTimeout);
+    process.stdin.on("data", (c: Buffer) => {
+      if (timer) { clearTimeout(timer); timer = undefined; }
+      chunks.push(c);
+    });
+    process.stdin.on("end", finish);
+    process.stdin.on("error", finish);
+  });
+}
+
+/** Diffs for untracked files, so brand-new files an agent never staged are still reviewed. */
+function untrackedDiffs(skip: Set<string>): string {
+  const list = tryGit(["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (!list) return "";
+  let out = "";
+  for (const file of list.split("\0").filter(Boolean)) {
+    // Never review our own output, and skip large untracked blobs (datasets, builds).
+    if (skip.has(resolve(file)) || file.endsWith("diffplay.html")) continue;
+    try { if (statSync(file).size > 1024 * 1024) continue; } catch { continue; }
+    const r = spawnSync("git", ["-c", "core.quotePath=false", "diff", "--no-color", "--no-index", "--", "/dev/null", file], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    // `git diff --no-index` exits 1 when the files differ, which is the normal case here.
+    if (r.stdout) out += r.stdout.endsWith("\n") ? r.stdout : r.stdout + "\n";
+  }
+  return out;
 }
 
 interface Input { diff: string; source: string; title?: string; body?: string }
@@ -125,25 +172,55 @@ async function fromGithubPr(ref: string): Promise<Input> {
   }
   if (!m) fail(`--pr ${ref} needs the GitHub CLI (gh). Install it, or pass the full PR URL.`);
   const [, owner, repo, num] = m;
-  const res = await fetch(`https://patch-diff.githubusercontent.com/raw/${owner}/${repo}/pull/${num}.diff`);
-  if (!res.ok) fail(`Could not download ${ref} (${res.status}). For private repos, install and log in to gh.`);
+  const urls = [
+    `https://patch-diff.githubusercontent.com/raw/${owner}/${repo}/pull/${num}.diff`,
+    `https://github.com/${owner}/${repo}/pull/${num}.diff`,
+  ];
+  let diff: string | null = null;
+  let lastError = "";
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) { diff = await res.text(); break; }
+      lastError = `HTTP ${res.status}`;
+    } catch (e) {
+      lastError = networkReason(e);
+    }
+  }
+  if (diff === null) {
+    fail(
+      `Could not download ${ref} (${lastError}).\n` +
+        `  Private repo? Install the GitHub CLI and run: gh auth login\n` +
+        `  Behind a proxy? Run with NODE_USE_ENV_PROXY=1 (Node 22.21+), or: gh pr diff ${num} -R ${owner}/${repo} | diffplay -`,
+    );
+  }
   let title: string | undefined, body: string | undefined;
   try {
     const meta = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${num}`, { headers: { accept: "application/vnd.github+json" } });
     if (meta.ok) ({ title, body } = (await meta.json()) as { title: string; body: string });
   } catch { /* optional */ }
-  return { diff: await res.text(), source: `github.com/${owner}/${repo}/pull/${num}`, title, body };
+  return { diff, source: `github.com/${owner}/${repo}/pull/${num}`, title, body };
+}
+
+/** Turn undici's bare "fetch failed" into the actual reason. */
+function networkReason(e: unknown): string {
+  const err = e as { message?: string; cause?: { code?: string; message?: string } };
+  return err.cause?.code ?? err.cause?.message ?? err.message ?? "network error";
 }
 
 async function getInput(a: Args): Promise<Input> {
   if (a.diff) return { diff: readFileSync(a.diff, "utf8"), source: a.diff };
   if (a.pr) return fromGithubPr(a.pr);
   if (a.target && /github\.com\/.+\/pull\/\d+/.test(a.target)) return fromGithubPr(a.target);
-  if (!process.stdin.isTTY && !a.target) {
-    const piped = await readStdin();
+  const inGit = tryGit(["rev-parse", "--is-inside-work-tree"]) === "true";
+  if (a.target === "-" || (!a.target && stdinIsData())) {
+    // Outside a repo stdin is the only possible source, so wait for it; inside one,
+    // fall back to git if nothing is piped within a few seconds.
+    const piped = await readStdin(a.target === "-" || !inGit ? undefined : 1500);
     if (piped.trim()) return { diff: piped, source: "stdin" };
+    if (a.target === "-") fail("Nothing was piped in.");
   }
-  if (tryGit(["rev-parse", "--is-inside-work-tree"]) !== "true") {
+  if (!inGit) {
     fail("Not inside a git repository. Pass a PR URL, --diff <file>, or pipe a diff in.");
   }
   if (a.target) {
@@ -155,10 +232,14 @@ async function getInput(a: Args): Promise<Input> {
   const base = ["origin/HEAD", "origin/main", "origin/master", "main", "master"]
     .map((b) => tryGit(["merge-base", "HEAD", b]))
     .find((x) => x);
-  const range = base ?? "HEAD";
-  const diff = tryGit(["diff", "--no-color", "-M", range]) ?? "";
+  const hasHead = tryGit(["rev-parse", "--verify", "-q", "HEAD"]) !== null;
+  const range = base ?? (hasHead ? "HEAD" : null);
+  // A repo with no commits yet: everything staged counts as new.
+  const tracked = range ? tryGit(["diff", "--no-color", "-M", range]) : tryGit(["diff", "--no-color", "--cached"]);
+  const ours = new Set([a.out, a.json, typeof a.md === "string" ? a.md : undefined].filter((x): x is string => Boolean(x)).map((x) => resolve(x)));
+  const diff = (tracked ? tracked + "\n" : "") + untrackedDiffs(ours);
   const branch = tryGit(["rev-parse", "--abbrev-ref", "HEAD"]) ?? "HEAD";
-  return { diff, source: base ? `${branch} vs base ${base.slice(0, 7)} (incl. uncommitted)` : "uncommitted changes" };
+  return { diff, source: base ? `${branch} vs base ${base.slice(0, 7)} (incl. uncommitted and new files)` : "uncommitted changes and new files" };
 }
 
 function openFile(path: string) {
@@ -180,6 +261,7 @@ async function main() {
   }
 
   const w = buildWalkthrough(input.diff, { title: a.title ?? input.title, source: input.source });
+  if (!w.stats.files) fail("That doesn't look like a diff. Expected unified diff output, e.g. from git diff.");
   if (!w.steps.length) {
     if (!a.quiet) console.log("diffplay: only generated or binary files changed. Nothing to review.");
     return;

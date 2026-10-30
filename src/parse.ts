@@ -2,9 +2,31 @@ import type { DiffLine, FileDiff, FileStatus, Hunk } from "./types.js";
 
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/;
 
+/** Undo git's C-style path quoting: "src/\303\274.ts" → src/ü.ts */
+export function unquotePath(p: string): string {
+  if (!(p.startsWith('"') && p.endsWith('"') && p.length >= 2)) return p;
+  const body = p.slice(1, -1);
+  const bytes: number[] = [];
+  const simple: Record<string, number> = { n: 10, t: 9, r: 13, '"': 34, "\\": 92, a: 7, b: 8, f: 12, v: 11 };
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "\\" && i + 1 < body.length) {
+      const nx = body[i + 1];
+      if (/[0-7]/.test(nx)) {
+        bytes.push(parseInt(body.slice(i + 1, i + 4), 8));
+        i += 3;
+        continue;
+      }
+      if (nx in simple) { bytes.push(simple[nx]); i++; continue; }
+    }
+    for (const b of Buffer.from(ch, "utf8")) bytes.push(b);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
 function stripPrefix(p: string): string {
   if (p === "/dev/null") return p;
-  return p.replace(/^"/, "").replace(/"$/, "").replace(/^[ab]\//, "");
+  return unquotePath(p).replace(/^[ab]\//, "");
 }
 
 function emptyFile(oldPath: string, newPath: string): FileDiff {
@@ -50,8 +72,9 @@ export function parseDiff(input: string): FileDiff[] {
 
     if (raw.startsWith("diff --git ")) {
       finish();
-      const m = raw.match(/^diff --git "?a\/(.+?)"? "?b\/(.+?)"?$/);
-      file = emptyFile(m?.[1] ?? "", m?.[2] ?? "");
+      const q = raw.match(/^diff --git ("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*"|\S+)$/);
+      const m = q ?? raw.match(/^diff --git a\/(.+) b\/(.+)$/);
+      file = q ? emptyFile(stripPrefix(q[1]), stripPrefix(q[2])) : emptyFile(m?.[1] ?? "", m?.[2] ?? "");
       status = "modified";
       continue;
     }
@@ -65,8 +88,8 @@ export function parseDiff(input: string): FileDiff[] {
 
     if (raw.startsWith("new file mode")) { status = "added"; continue; }
     if (raw.startsWith("deleted file mode")) { status = "deleted"; continue; }
-    if (raw.startsWith("rename from ")) { file.oldPath = raw.slice(12); status = "renamed"; continue; }
-    if (raw.startsWith("rename to ")) { file.newPath = raw.slice(10); status = "renamed"; continue; }
+    if (raw.startsWith("rename from ")) { file.oldPath = unquotePath(raw.slice(12)); status = "renamed"; continue; }
+    if (raw.startsWith("rename to ")) { file.newPath = unquotePath(raw.slice(10)); status = "renamed"; continue; }
     if (raw.startsWith("Binary files") || raw.startsWith("GIT binary patch")) { file.binary = true; continue; }
     if (raw.startsWith("--- ")) { file.oldPath = stripPrefix(raw.slice(4).split("\t")[0]); continue; }
     if (raw.startsWith("+++ ")) { file.newPath = stripPrefix(raw.slice(4).split("\t")[0]); continue; }
