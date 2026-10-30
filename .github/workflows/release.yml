@@ -25,11 +25,12 @@ jobs:
           MAJOR="${VERSION%%.*}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+          if git rev-parse "$VERSION" >/dev/null 2>&1 && git merge-base --is-ancestor "$VERSION^{commit}" HEAD; then
             echo "$VERSION already tagged"
           else
-            git tag -a "$VERSION" -m "$VERSION"
-            git push origin "$VERSION"
+            # New version, or the tagged commit is no longer on main (history was rewritten).
+            git tag -fa "$VERSION" -m "$VERSION"
+            git push -f origin "$VERSION"
           fi
           git tag -fa "$MAJOR" -m "$MAJOR (latest: $VERSION)"
           git push -f origin "$MAJOR"
