@@ -115,7 +115,7 @@ export function buildWalkthrough(diffText: string, opts: BuildOptions = {}): Wal
     summary,
     source: opts.source ?? "local diff",
     generatedAt: new Date().toISOString(),
-    narratedBy: "heuristics",
+    narratedBy: "built-in notes (no model key set)",
     stats,
     steps,
     hiddenFiles,
