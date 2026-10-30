@@ -179,6 +179,7 @@ No checkout step is needed: the Action reads the PR diff from the GitHub API.
 |---|---|
 | `high` | Number of high-risk flags |
 | `medium` | Number of worth-a-check flags |
+| `low` | Number of minor flags |
 
 Pull requests from forks run with a read-only token, so GitHub won't let any Action comment on them. diffplay detects this, warns instead of failing, and still writes the summary to the job page.
 

@@ -1,6 +1,6 @@
 {
   "name": "diffplay",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turn any AI-written pull request into a guided walkthrough you can actually review. Story-ordered steps, risk heatmap, one self-contained HTML file.",
   "type": "module",
   "bin": {

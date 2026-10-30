@@ -1,5 +1,5 @@
-name: diffplay
-description: Turn every pull request into a guided, risk-ranked walkthrough and post it as a comment.
+name: diffplay PR Walkthrough
+description: Review AI-written pull requests in minutes. A guided, risk-ranked walkthrough of every PR, posted as a comment.
 author: Mohamed Said Yekhlef
 branding:
   icon: play-circle
@@ -35,6 +35,9 @@ outputs:
   medium:
     description: Number of medium-risk flags.
     value: ${{ steps.run.outputs.medium }}
+  low:
+    description: Number of minor flags.
+    value: ${{ steps.run.outputs.low }}
 
 runs:
   using: composite
