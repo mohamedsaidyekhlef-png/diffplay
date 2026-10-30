@@ -1,0 +1,35 @@
+name: release
+# Tags every new package.json version on main (v0.1.0) and moves the major tag (v0)
+# so `uses: mohamedsaidyekhlef-png/diffplay@v0` always points at the latest release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npm test
+      - name: Tag the release
+        run: |
+          VERSION="v$(node -p "require('./package.json').version")"
+          MAJOR="${VERSION%%.*}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "$VERSION already tagged"
+          else
+            git tag -a "$VERSION" -m "$VERSION"
+            git push origin "$VERSION"
+          fi
+          git tag -fa "$MAJOR" -m "$MAJOR (latest: $VERSION)"
+          git push -f origin "$MAJOR"
