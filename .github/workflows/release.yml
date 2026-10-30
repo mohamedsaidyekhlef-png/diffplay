@@ -34,3 +34,20 @@ jobs:
           fi
           git tag -fa "$MAJOR" -m "$MAJOR (latest: $VERSION)"
           git push -f origin "$MAJOR"
+      - name: Re-point tags orphaned by a history rewrite
+        run: |
+          # A tag whose commit is no longer on main is moved to the main commit with the same subject line.
+          git fetch -q --tags --force origin
+          for TAG in $(git tag); do
+            SHA=$(git rev-parse "$TAG^{commit}")
+            git merge-base --is-ancestor "$SHA" HEAD && continue
+            SUBJECT=$(git log -1 --format=%s "$SHA")
+            MATCH=$(git log --format='%H %s' HEAD | awk -v s="$SUBJECT" '{h=$1; $1=""; sub(/^ /,""); if ($0==s) {print h; exit}}')
+            if [ -n "$MATCH" ]; then
+              git tag -fa "$TAG" "$MATCH" -m "$TAG"
+              git push -f origin "$TAG"
+              echo "Re-pointed $TAG to $MATCH"
+            else
+              echo "::warning::No matching commit on main for tag $TAG"
+            fi
+          done
