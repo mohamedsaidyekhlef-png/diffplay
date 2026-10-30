@@ -15,7 +15,7 @@ export function renderMarkdown(w: Walkthrough, link?: string): string {
   out.push(w.summary);
   out.push("");
   out.push(
-    `**${s.files} files** · <code>+${s.additions} −${s.deletions}</code> · read closely: **${s.focusPercent}%** of the diff · ` +
+    `**${s.files} file${s.files === 1 ? "" : "s"}** · <code>+${s.additions} −${s.deletions}</code> · read closely: **${s.focusPercent}%** of the diff · ` +
       `${EMOJI.high} ${s.risks.high} ${EMOJI.medium} ${s.risks.medium} ${EMOJI.low} ${s.risks.low}`,
   );
   if (link) out.push(`\n**[Open the guided walkthrough →](${link})**`);

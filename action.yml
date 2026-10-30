@@ -101,7 +101,7 @@ runs:
       run: |
         BODY_FILE="$RUNNER_TEMP/diffplay/comment.md"
         if [ -n "$LINK" ]; then
-          sed -i "0,/^\*\*[0-9]* files\*\*.*/s||&\n\n**[Download the guided walkthrough]($LINK)** (open the HTML file in any browser)|" "$BODY_FILE"
+          sed -i "0,/^\*\*[0-9]* files\?\*\*.*/s||&\n\n**[Download the guided walkthrough]($LINK)** (open the HTML file in any browser)|" "$BODY_FILE"
         fi
         EXISTING=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
           --jq '.[] | select(.body | startswith("<!-- diffplay -->")) | .id' | head -1)
