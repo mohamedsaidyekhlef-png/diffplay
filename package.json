@@ -1,0 +1,51 @@
+{
+  "name": "diffplay",
+  "version": "0.1.0",
+  "description": "Turn any AI-written pull request into a guided walkthrough you can actually review. Story-ordered steps, risk heatmap, one self-contained HTML file.",
+  "type": "module",
+  "bin": {
+    "diffplay": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "action.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "diff",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "cursor",
+    "github-action",
+    "mcp",
+    "developer-tools"
+  ],
+  "author": "Mohamed Said Yekhlef (SCAIROS)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mohamedsaidyekhlef-png/diffplay.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.0"
+  },
+  "homepage": "https://github.com/mohamedsaidyekhlef-png/diffplay#readme",
+  "bugs": {
+    "url": "https://github.com/mohamedsaidyekhlef-png/diffplay/issues"
+  }
+}

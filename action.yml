@@ -1,0 +1,130 @@
+name: diffplay
+description: Turn every pull request into a guided, risk-ranked walkthrough and post it as a comment.
+author: Mohamed Said Yekhlef
+branding:
+  icon: play-circle
+  color: blue
+
+inputs:
+  github-token:
+    description: Token used to read the PR and post the comment.
+    default: ${{ github.token }}
+  anthropic-api-key:
+    description: Optional. Claude writes the narration when set.
+    default: ""
+  openai-api-key:
+    description: Optional. Any OpenAI-compatible API writes the narration when set.
+    default: ""
+  openai-base-url:
+    description: Optional base URL for an OpenAI-compatible API (OpenRouter, Groq, Together…).
+    default: ""
+  model:
+    description: Optional model name override.
+    default: ""
+  fail-on:
+    description: Fail the check when a flag at this level or above is found (high, medium, low). Empty never fails.
+    default: ""
+  comment:
+    description: Post or update a PR comment with the summary.
+    default: "true"
+
+outputs:
+  high:
+    description: Number of high-risk flags.
+    value: ${{ steps.run.outputs.high }}
+  medium:
+    description: Number of medium-risk flags.
+    value: ${{ steps.run.outputs.medium }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Build diffplay
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci --silent --no-audit --no-fund && npm run build --silent
+
+    - name: Fetch the PR diff
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        if [ -z "$PR" ]; then echo "::error::diffplay runs on pull_request events."; exit 1; fi
+        gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" -H "Accept: application/vnd.github.v3.diff" > "$RUNNER_TEMP/pr.diff"
+        gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.title' > "$RUNNER_TEMP/pr-title.txt"
+
+    - name: Build the walkthrough
+      id: run
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        OPENAI_BASE_URL: ${{ inputs.openai-base-url }}
+        DIFFPLAY_MODEL: ${{ inputs.model }}
+      run: |
+        [ -z "$OPENAI_BASE_URL" ] && unset OPENAI_BASE_URL
+        [ -z "$DIFFPLAY_MODEL" ] && unset DIFFPLAY_MODEL
+        mkdir -p "$RUNNER_TEMP/diffplay"
+        node "${{ github.action_path }}/dist/cli.js" \
+          --diff "$RUNNER_TEMP/pr.diff" \
+          --title "$(cat "$RUNNER_TEMP/pr-title.txt")" \
+          -o "$RUNNER_TEMP/diffplay/walkthrough.html" \
+          --json "$RUNNER_TEMP/diffplay/walkthrough.json" \
+          --md "$RUNNER_TEMP/diffplay/comment.md" -q
+        node -e 'const w=require(process.argv[1]);const r=w.stats.risks;console.log(`high=${r.high}\nmedium=${r.medium}\nlow=${r.low}`)' \
+          "$RUNNER_TEMP/diffplay/walkthrough.json" >> "$GITHUB_OUTPUT"
+
+    - name: Upload the walkthrough
+      id: upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: diffplay-walkthrough
+        path: ${{ runner.temp }}/diffplay/walkthrough.html
+        retention-days: 30
+
+    - name: Write the job summary
+      shell: bash
+      run: cat "$RUNNER_TEMP/diffplay/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on the PR
+      if: inputs.comment == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+        LINK: ${{ steps.upload.outputs.artifact-url }}
+      run: |
+        BODY_FILE="$RUNNER_TEMP/diffplay/comment.md"
+        if [ -n "$LINK" ]; then
+          sed -i "0,/^\*\*[0-9]* files\*\*.*/s||&\n\n**[Download the guided walkthrough]($LINK)** (open the HTML file in any browser)|" "$BODY_FILE"
+        fi
+        EXISTING=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --paginate \
+          --jq '.[] | select(.body | startswith("<!-- diffplay -->")) | .id' | head -1)
+        if [ -n "$EXISTING" ]; then
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING}" -F body=@"$BODY_FILE" > /dev/null || COMMENT_FAILED=1
+        else
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" -F body=@"$BODY_FILE" > /dev/null || COMMENT_FAILED=1
+        fi
+        if [ -n "$COMMENT_FAILED" ]; then
+          # Pull requests from forks get a read-only token. Keep the summary in the job log instead.
+          echo "::warning::diffplay could not comment (read-only token, e.g. a PR from a fork). The summary is on the job page."
+        fi
+
+
+    - name: Enforce the risk gate
+      if: inputs.fail-on != ''
+      shell: bash
+      run: |
+        H=${{ steps.run.outputs.high }}; M=${{ steps.run.outputs.medium }}; L=${{ steps.run.outputs.low }}
+        case "${{ inputs.fail-on }}" in
+          high) N=$H ;;
+          medium) N=$((H + M)) ;;
+          low) N=$((H + M + L)) ;;
+          *) echo "::error::fail-on must be high, medium or low"; exit 1 ;;
+        esac
+        if [ "$N" -gt 0 ]; then echo "::error::diffplay found $N flag(s) at '${{ inputs.fail-on }}' or above."; exit 1; fi
