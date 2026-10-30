@@ -48,8 +48,8 @@ One command. One self-contained HTML file. No account, no server, no runtime dep
 You need Node 18 or newer. Nothing is installed globally.
 
 ```bash
-# In any git repo: everything on your branch, including uncommitted work, vs main.
-# This is the "what did my agent just do?" button.
+# In any git repo: everything on your branch vs main, including uncommitted work
+# and brand-new files nobody has staged yet. The "what did my agent just do?" button.
 npx github:mohamedsaidyekhlef-png/diffplay --open
 ```
 
@@ -59,7 +59,7 @@ That writes `diffplay.html` and opens it. More ways in:
 npx github:mohamedsaidyekhlef-png/diffplay HEAD~3                       # any revision
 npx github:mohamedsaidyekhlef-png/diffplay main..feature                # any range
 npx github:mohamedsaidyekhlef-png/diffplay https://github.com/o/r/pull/42   # a GitHub PR
-git diff --staged | npx github:mohamedsaidyekhlef-png/diffplay          # anything piped in
+git diff --staged | npx github:mohamedsaidyekhlef-png/diffplay -        # anything piped in
 npx github:mohamedsaidyekhlef-png/diffplay --diff change.patch          # a patch file
 ```
 
@@ -208,7 +208,7 @@ Set `DIFFPLAY_MODEL` to use any other model. Use `--no-ai` to skip narration eve
 
 ## 🚦 The rules
 
-Every rule is a pattern, a severity, and one sentence of why. They are tuned to stay quiet on ordinary code: test files, docs and import lines are excluded where a rule would be noisy there, placeholders like `"your-api-key"` are ignored, a moved test is not a deleted test, and an edited assertion is not a removed one.
+Every rule is a pattern, a severity, and one sentence of why. They are tuned to stay quiet on ordinary code: test files, docs and import lines are excluded where a rule would be noisy there, placeholders like `"your-api-key"` are ignored, a moved test is not a deleted test, and assertions that move between files are not a loss.
 
 <details open>
 <summary><b>🔴 High — read before merging</b></summary>
@@ -239,8 +239,8 @@ Every rule is a pattern, a severity, and one sentence of why. They are tuned to 
 |---|---|
 | Raw HTML injection | `dangerouslySetInnerHTML`, `.innerHTML =`, `v-html`, `|safe`, `mark_safe` |
 | Error swallowed | `catch {}`, `except: pass`, `.catch(() => {})`, `rescue nil` |
-| Test skipped or weakened | `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `expect(true).toBe(true)` |
-| Assertion removed | A test file that ends up with fewer assertions than it started with |
+| Test skipped or weakened | `.skip`, `.only`, `xit`, `@pytest.mark.skip`, `expect(true).toBe(true)` (conditional `skipif` is fine) |
+| Fewer assertions | The change as a whole removes more assertions than it adds (tests moved between files don't count) |
 | Payment API call | `stripe.x.create/update/refund`, `paymentIntents.create`, `refunds.create`… |
 | Debug flag on | `DEBUG = True`, `debug: true`, `app.run(debug=True)` |
 | Database migration | Any file under a migrations folder |
@@ -268,12 +268,20 @@ Every rule is a pattern, a severity, and one sentence of why. They are tuned to 
 
 ### How quiet is it?
 
-Measured on [Hono](https://github.com/honojs/hono), a widely used TypeScript web framework: across its 75 most recent commits (features, fixes, tooling migrations, a 10,000-line package-manager switch), diffplay raised **zero high-risk flags**. The "worth a check" flags it did raise were dependency and CI changes, edited tests, and intentionally empty `catch` blocks — all things a reviewer should glance at. Reproduce it yourself:
+A flag nobody believes is worse than no flag, so the rules are tested against real history, not just examples. On the 55 most recent commits of three popular projects in three languages:
+
+| Project | Language | Commits | Changed lines | High-risk flags | Time |
+|---|---|---|---|---|---|
+| [Hono](https://github.com/honojs/hono) | TypeScript | 55 | 8,939 | **0** | 92 ms |
+| [FastAPI](https://github.com/fastapi/fastapi) | Python | 55 | 9,030 | **0** | 88 ms |
+| [Bubble Tea](https://github.com/charmbracelet/bubbletea) | Go | 55 | 1,997 | **0** | 56 ms |
+
+The "worth a check" flags they did raise were dependency and CI changes, a test refactor that dropped a few assertions, and intentionally empty `catch` blocks: exactly what a reviewer should glance at. Reproduce it on any repo:
 
 ```bash
-git clone --depth 80 https://github.com/honojs/hono && cd hono
-for c in $(git log --format=%h -n 75); do
-  git show --format= -M $c | npx github:mohamedsaidyekhlef-png/diffplay --no-ai -q -o /dev/null --fail-on high || echo "high flag in $c"
+git clone --depth 60 https://github.com/honojs/hono && cd hono
+for c in $(git log --format=%h -n 55); do
+  git show --format= -M $c | npx github:mohamedsaidyekhlef-png/diffplay - --no-ai -q -o /dev/null --fail-on high || echo "high flag in $c"
 done
 ```
 
@@ -299,7 +307,7 @@ flowchart LR
 - **Parsing** follows each hunk's declared line counts, so a deleted SQL comment such as `-- note` is never mistaken for a file header. Totals match `git diff --shortstat` exactly.
 - **Classification** is by path: `migrations/`, `*.sql` and `schema.prisma` are the data model; `route.ts`, `controllers/` and `middleware/` are the API surface; `*.test.ts` and `tests/` are tests; lock files and `dist/` are generated. Anything else is core logic.
 - **"Read closely"** is the share of changed lines inside hunks that contain at least one high or worth-a-check flag. It tells you how much of the PR deserves real attention.
-- **Speed:** a 2,000-line diff takes about a quarter of a second.
+- **Speed:** 200 files and 8,000 changed lines take about a quarter of a second, and the resulting page opens in under a second.
 
 <br>
 
@@ -311,10 +319,10 @@ diffplay [target] [options]
 
 | Target | Meaning |
 |---|---|
-| *(none)* | This branch plus uncommitted work, against `origin/HEAD`, `origin/main`, `origin/master`, `main` or `master` (first found) |
+| *(none)* | This branch plus uncommitted work and untracked files, against `origin/HEAD`, `origin/main`, `origin/master`, `main` or `master` (first found). Untracked files over 1 MB and diffplay's own output are skipped |
 | `HEAD~3`, `main..feature`, `abc123` | Any git revision or range |
 | `https://github.com/o/r/pull/42` | A GitHub PR. Uses the `gh` CLI if installed (private repos work), otherwise the public diff |
-| *(piped input)* | Any unified diff on stdin |
+| `-` or piped input | Any unified diff on stdin |
 
 | Option | |
 |---|---|
